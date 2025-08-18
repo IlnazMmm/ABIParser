@@ -160,6 +160,7 @@ class ContractCollection:
     """
     def __init__(self, compiled_data):
         self.contracts = {}
+        self.compiled_data = compiled_data
         for full_name, data in compiled_data.get("contracts", {}).items():
             contract_name = full_name.split(":")[-1]
             self.contracts[contract_name] = Contract(contract_name, data.get("abi", []))
@@ -171,4 +172,48 @@ class ContractCollection:
     def __repr__(self):
         return f"<ContractCollection {list(self.contracts.keys())}>"
 
-compiled_data = json.load(open("compiled.json"))
+    def save(self, filename: str):
+        """Сохраняет ABI/байткод в JSON"""
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(self.compiled_data, f, indent=2, ensure_ascii=False)
+
+    @classmethod
+    def load(cls, filename: str):
+        """Загружает ABI/байткод из JSON"""
+        with open(filename, "r", encoding="utf-8") as f:
+            compiled_data = json.load(f)
+        return cls(compiled_data)
+
+
+def compile_solidity(sol_file: str, save_json: bool = True) -> dict:
+    """
+    Компиляция Solidity-контракта через Docker-образ ethereum/solc.
+    Файл копируется во временную папку, которая монтируется в контейнер.
+    """
+    client = docker.from_env()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        shutil.copy(Path(sol_file), Path(tmpdir) / sol_file)
+
+        result = client.containers.run(
+            "ethereum/solc:0.8.20",
+            [
+                "--combined-json", "abi,bin,metadata",
+                f"/sources/{sol_file}"
+            ],
+            volumes={tmpdir: {"bind": "/sources", "mode": "rw"}},
+            remove=True
+        )
+    compiled = json.loads(result.decode("utf-8"))
+    return ContractCollection(compiled)
+
+
+if __name__ == "__main__":
+    sol_file = "Example.sol"
+    contracts = compile_solidity(sol_file)
+    contracts.save("compiled.json")
+    print("Компиляция:", contracts)
+
+    # второй запуск -> можно грузить из файла
+    loaded_contracts = ContractCollection.load("compiled.json")
+    print("Из файла:", loaded_contracts)
