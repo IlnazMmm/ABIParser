@@ -12,18 +12,50 @@ def keccak256(data: str) -> str:
     """Keccak256 в hex-строке"""
     return "0x" + hashlib.sha3_256(data.encode()).hexdigest()
 
+class ABIType:
+    """
+    Представляет тип параметра ABI (включая tuple/tuple[] и вложенные структуры).
+    """
+    def __init__(self, type_str: str, components: list = None):
+        self.raw = type_str  # строка типа из ABI: "uint256", "tuple", "tuple[]"
+        self.components = [
+            ABIInput(c.get("name", ""), c["type"], c.get("indexed", False), c.get("components"))
+            for c in (components or [])
+        ]
+
+    def __repr__(self):
+        if self.is_tuple:
+            return f"({', '.join(map(str, self.components))})"
+        return self.raw
+
+    @property
+    def is_tuple(self) -> bool:
+        return self.raw.startswith("tuple")
+
+    @property
+    def canonical_type(self) -> str:
+        """
+        Возвращает каноническое строковое представление для сигнатуры.
+        tuple → (типы компонентов)
+        tuple[] → (типы компонентов)[]
+        """
+        if self.is_tuple:
+            inner = ",".join(c.type.canonical_type for c in self.components)
+            suffix = self.raw[5:]  # [] если это tuple[]
+            return f"({inner}){suffix}"
+        return self.raw
 
 class ABIInput:
     """
     Описывает входной/выходной параметр ABI (тип, имя, признак indexed для событий).
     """
-    def __init__(self, name, type_, indexed=False):
+    def __init__(self, name, type_: str, indexed=False, components=None):
         self.name = name
-        self.type = type_
+        self.type = ABIType(type_, components)
         self.indexed = indexed
 
     def __repr__(self):
-        return f"{self.type} {self.name}"
+        return f"{self.type.canonical_type} {self.name}".strip()
 
 
 class ABIEntry:
@@ -41,7 +73,7 @@ class ABIEntry:
     @property
     def signature(self):
         """Формат Имя(типы)"""
-        types = ",".join(inp.type for inp in self.inputs)
+        types = ",".join(inp.type.canonical_type for inp in self.inputs)
         if self.entry_type in ("function", "event", "error"):
             return f"{self.name}({types})"
         return None
@@ -105,13 +137,20 @@ class Contract:
         self.receives = []
         self.errors = {}
         self._parse_abi(abi)
+        self.abi = json.dumps(abi)
 
     def _parse_abi(self, abi):
         for entry in abi:
             entry_type = entry.get("type")
             name = entry.get("name", "")
-            inputs = [ABIInput(i.get("name", ""), i["type"], i.get("indexed", False)) for i in entry.get("inputs", [])]
-            outputs = [ABIInput(o.get("name", ""), o["type"]) for o in entry.get("outputs", [])] if "outputs" in entry else []
+            inputs = [
+                ABIInput(i.get("name", ""), i["type"], i.get("indexed", False), i.get("components"))
+                for i in entry.get("inputs", [])
+            ]
+            outputs = [
+                ABIInput(o.get("name", ""), o["type"], False, o.get("components"))
+                for o in entry.get("outputs", [])
+            ] if "outputs" in entry else []
             state_mutability = entry.get("stateMutability", "")
 
             abi_entry = ABIEntry(name, inputs, outputs, state_mutability, entry_type)
